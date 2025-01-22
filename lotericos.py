@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox
 import re
 from pytesseract import pytesseract
 import requests
+from PIL import Image
 
 # Caminhos dos binários
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -19,8 +20,8 @@ POPLER_PATH = r"C:\poppler\bin"
 TESSERACT_URL = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-v5.3.0.20221214.exe"
 POPPLER_URL = "https://github.com/oschwartz10612/poppler-windows/releases/download/v23.01.0/Release-23.01.0.zip"
 
-# Caminho da base de dados externa (precisa adicionar a sua)
-BASE_DADOS_PATH = r"INSISRASUABASEAQUI.xlsx"
+# Caminho da base de dados externa
+BASE_DADOS_PATH = r"C:\Users\NicolasAndré\Wedo Contabilidade e Solu&ccedil;&otilde;es Empresariais\W E D O - W E D O - DEPARTAMENTOS\T.I\Projetos Gênesis\Base_Data\BASE DE DADOS.xlsx"
 
 # Teste de leitura do arquivo
 try:
@@ -29,9 +30,10 @@ try:
     print("Colunas presentes:", base_dados.columns)
 
     # Validação das colunas necessárias
-    colunas_necessarias = ["Histórico", "Cód. Conta Debito", "Cód. Conta Credito", "Cód. Histórico", "Código"]
+    colunas_necessarias = ["Histórico", "Cód. Conta Debito", "Cód. Conta Credito", "Cód. Histórico"]
     if not all(coluna in base_dados.columns for coluna in colunas_necessarias):
         raise ValueError(f"A base de dados deve conter as colunas: {', '.join(colunas_necessarias)}")
+
 except FileNotFoundError:
     print(f"Arquivo não encontrado: {BASE_DADOS_PATH}")
 except Exception as e:
@@ -87,9 +89,16 @@ def baixar_arquivo(url, destino):
 # Configuração do Tesseract
 pytesseract.tesseract_cmd = TESSERACT_PATH
 
+def is_gray(rgb):
+    """
+    Verifica se a cor é cinza.
+    """
+    r, g, b = rgb
+    return r == g == b
+
 def extrair_dados_ocr(caminho_pdf):
     """
-    Extrai os dados do PDF utilizando OCR, ignorando a coluna 'Nr.Doc'.
+    Extrai os dados do PDF utilizando OCR, incluindo colunas padrão.
     """
     try:
         imagens = convert_from_path(caminho_pdf, poppler_path=POPLER_PATH, dpi=300)
@@ -101,7 +110,6 @@ def extrair_dados_ocr(caminho_pdf):
         )
 
         for imagem in imagens:
-            # Melhorar a qualidade da imagem para OCR
             imagem = imagem.convert('L')  # Converter para escala de cinza
             texto = image_to_string(imagem, lang="por", config="--psm 6")
             texto = re.sub(r"\s{2,}", " ", texto)
@@ -111,32 +119,42 @@ def extrair_dados_ocr(caminho_pdf):
                 match = padrao_linha.search(linha)
                 if match:
                     data_mov = match.group(1)
-                    historico = re.sub(r"[^a-zA-Z\s]", "", match.group(2)).strip()  # Remove números e caracteres especiais
-                    valor = match.group(3).replace(" ", "")  # Remove espaços no valor
+                    historico = re.sub(r"[^a-zA-Z\s]", "", match.group(2)).strip()
+                    valor = match.group(3).replace(" ", "")
                     linhas_relevantes.append([data_mov, historico, valor])
                 else:
                     logging.warning(f"Linha ignorada (não corresponde ao padrão): {linha}")
 
-        # Criar DataFrame com os dados extraídos, sem a coluna 'Nr.Doc'
+        # Criar DataFrame com os dados extraídos, incluindo colunas padrão
         df = pd.DataFrame(linhas_relevantes, columns=["Data Mov.", "Histórico", "Valor"])
+        df["Cód. Conta Debito"] = None
+        df["Cód. Conta Credito"] = None
+        df["Cód. Histórico"] = None
 
+        # Remover linhas onde o campo "Histórico" contém "SALDO"
+        df = df[~df["Histórico"].str.contains("SALDO", case=False, na=False)]
+
+        # Remover linhas onde o campo "Valor" é igual a 0
+        df = df[df["Valor"] != 0]
+
+
+        # Adicionar colunas personalizadas
+        df = adicionar_colunas_personalizadas(df)
+
+        return df
+    
         # Log do conteúdo extraído
         logging.info(f"Dados extraídos do PDF {caminho_pdf}: {df.head()}")
 
-        # Remover linhas com "SALDO DIA" no campo "Histórico"
-        df = df[~df["Histórico"].str.contains("SALDO DIA", case=False, na=False)]
-
-        # Remover linhas onde o campo "Valor" esteja vazio
-        df = df[df["Valor"].str.strip() != ""]
-
-        # Remover números no início da coluna "Histórico"
-        df = remover_numeros_inicio_historico(df)
-
         return df
+    
     except Exception as e:
         logging.error(f"Erro ao processar PDF com OCR: {e}")
         return pd.DataFrame()
 
+    except Exception as e:
+        logging.error(f"Erro ao processar PDF com OCR: {e}")
+        return pd.DataFrame()
 def remover_numeros_inicio_historico(df):
     """
     Remove números e espaços no início da coluna 'Histórico', mantendo apenas o restante da string.
@@ -173,40 +191,34 @@ def adicionar_colunas_personalizadas(df):
         # Carregar a base de dados externa
         base_dados = pd.read_excel(BASE_DADOS_PATH)
 
-        # Validar se as colunas esperadas estão na base
-        colunas_necessarias = ["Histórico", "Cód. Conta Debito", "Cód. Conta Credito", "Cód. Histórico"]
-        if not all(coluna in base_dados.columns for coluna in colunas_necessarias):
-            raise ValueError(f"A base de dados deve conter as colunas: {', '.join(colunas_necessarias)}")
-
         # Normalizar os valores para evitar diferenças de capitalização ou espaços
         base_dados["Histórico"] = base_dados["Histórico"].str.strip().str.upper()
         df["Histórico"] = df["Histórico"].str.strip().str.upper()
 
-        # Adicionar depuração
-        print("Exemplo de valores da coluna 'Histórico' no DataFrame extraído:")
-        print(df["Histórico"].unique()[:5])
-        print("Exemplo de valores da coluna 'Histórico' na base de dados:")
-        print(base_dados["Histórico"].unique()[:5])
+        # Criar mapeamento para as colunas
+        mapeamento_debito = base_dados.set_index("Histórico")["Cód. Conta Debito"].to_dict()
+        mapeamento_credito = base_dados.set_index("Histórico")["Cód. Conta Credito"].to_dict()
+        mapeamento_historico = base_dados.set_index("Histórico")["Cód. Histórico"].to_dict()
 
-        # Criar o mapeamento
-        mapeamento_codigo = base_dados.set_index("Histórico")[["Cód. Conta Debito", "Cód. Conta Credito", "Cód. Histórico"]].to_dict(orient="index")
+        # Adicionar colunas ao DataFrame com os valores mapeados
+        df["Cód. Conta Debito"] = df["Histórico"].map(mapeamento_debito)
+        df["Cód. Conta Credito"] = df["Histórico"].map(mapeamento_credito)
+        df["Cód. Histórico"] = df["Histórico"].map(mapeamento_historico)
 
-        # Função para mapear os códigos
-        def mapear_codigos(historico):
-            if historico in mapeamento_codigo:
-                return pd.Series(mapeamento_codigo[historico])
-            else:
-                return pd.Series([None, None, None])
-
-        # Aplicar o mapeamento ao DataFrame
-        df[["Cód. Conta Débito", "Cód. Conta Crédito", "Cód. Histórico"]] = df["Histórico"].apply(mapear_codigos)
+        # Verificação de correspondência
+        valores_nao_encontrados = df[~df["Histórico"].isin(base_dados["Histórico"])]["Histórico"].unique()
+        if len(valores_nao_encontrados) > 0:
+            logging.warning(f"Os seguintes valores do 'Histórico' não foram encontrados na base de dados: {valores_nao_encontrados}")
+            print(f"Valores não encontrados na base de dados: {valores_nao_encontrados}")
 
         return df
     except Exception as e:
         logging.error(f"Erro ao adicionar colunas personalizadas: {e}")
         return df
 
-def adicionar_coluna_codigo(df):
+
+
+def adicionar_coluna_historico(df):
     """
     Adiciona a coluna "Código" ao DataFrame com base na base de dados externa.
     """
@@ -255,22 +267,49 @@ def salvar_excel_formatado(df, caminho_pdf, diretorio_saida):
 
 def salvar_txt_formatado(df, caminho_pdf, diretorio_saida):
     """
-    Salva os dados extraídos em um arquivo TXT com campos separados por ";".
+    Salva os dados extraídos em um arquivo TXT com campos reorganizados.
     """
     try:
-        # Configurar nome do arquivo TXT
         nome_pdf = os.path.splitext(os.path.basename(caminho_pdf))[0]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         caminho_txt = os.path.join(diretorio_saida, f"{nome_pdf}_{timestamp}.txt")
 
-        # Adicionar depuração antes de salvar
-        print("Colunas no DataFrame antes de salvar no TXT:")
-        print(df.columns)
-        print("Exemplo de dados no DataFrame antes de salvar:")
-        print(df.head())
+        # Adicionar as novas colunas com valores padrão
+        df["Lote"] = "1"  # Coluna com valor padrão
+        df["Filial"] = ""  # Coluna vazia
+        df["Centro de Custo"] = ""  # Coluna vazia
 
-        # Salvar o DataFrame no arquivo TXT
-        df.to_csv(caminho_txt, sep=";", index=False, encoding="utf-8")
+        # Reorganizar as colunas para o TXT
+        colunas_reorganizadas = [
+            "Data Mov.", "Cód. Conta Credito", "Cód. Conta Debito",
+            "Valor", "Cód. Histórico", "Histórico", "Lote"
+        ]
+        df = df[colunas_reorganizadas]
+
+        # Garantir que os valores das colunas de código sejam inteiros e depois convertidos para strings
+        colunas_numericas = ["Cód. Conta Credito", "Cód. Conta Debito", "Cód. Histórico"]
+        for coluna in colunas_numericas:
+            df[coluna] = df[coluna].fillna(0).astype(int).astype(str)
+
+        # Ajustar a formatação dos valores
+        def formatar_valor(valor):
+            return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        df["Valor"] = df["Valor"].apply(formatar_valor)
+
+        # Formatar o conteúdo de cada linha no estilo desejado
+        linhas_formatadas = []
+        for _, row in df.iterrows():
+            linha = (
+                f"{row['Data Mov.']};{row['Cód. Conta Credito']};{row['Cód. Conta Debito']};"
+                f"{row['Valor']};{row['Cód. Histórico']};{row['Histórico']};{row['Lote']};;;"
+            )
+            linhas_formatadas.append(linha)
+
+        # Salvar as linhas formatadas no arquivo TXT
+        with open(caminho_txt, "w", encoding="utf-8") as arquivo_txt:
+            arquivo_txt.write("\n".join(linhas_formatadas))
+
         logging.info(f"Dados salvos com sucesso em: {caminho_txt}")
         print(f"Arquivo TXT salvo com sucesso: {caminho_txt}")
     except Exception as e:
@@ -285,52 +324,66 @@ class AppInterface:
         self.root = root
         self.root.title("GÊNESIS")
         self.root.geometry("800x700")
-        ctk.set_appearance_mode("dark")
+
+        # Configuração inicial do tema
+        self.tema_atual = "dark"  # Define o tema inicial como escuro
+        ctk.set_appearance_mode(self.tema_atual)
         ctk.set_default_color_theme("dark-blue")
 
-        # Variável para armazenar o diretório de saída
-        self.diretorio_saida = ""
-        self.arquivos_pdf = []
+        # Configuração de transparência (alpha)
+        self.root.attributes("-alpha", 0.9)  # Define a opacidade da janela (90%)
 
-        # Configuração da interface...
-        botoes_frame = ctk.CTkFrame(self.root)
-        botoes_frame.pack()
+        # Título da aplicação
+        self.titulo = ctk.CTkLabel(root, text="GÊNESIS", font=("Arial", 28, "bold"))
+        self.titulo.pack(pady=10)
 
-        titulo = ctk.CTkLabel(root, text="GÊNESIS",
-                              font=("Arial", 28, "bold"), text_color="#FFC107")
-        titulo.pack(pady=10)
+        self.subtitulo = ctk.CTkLabel(root, text="WEDO CONTABILIDADE DIGITAL", font=("Arial", 16, "italic"))
+        self.subtitulo.pack(pady=5)
 
-        subtitulo = ctk.CTkLabel(root, text="WEDO CONTABILIDADE DIGITAL",
-                                 font=("Arial", 16, "italic"), text_color="#FFD700")
-        subtitulo.pack(pady=5)
+        # Frame principal
+        self.frame = ctk.CTkFrame(root, corner_radius=15)
+        self.frame.pack(pady=20, padx=20, fill="both", expand=True)
 
-        frame = ctk.CTkFrame(root, corner_radius=15, fg_color="#2C2C2C")
-        frame.pack(pady=20, padx=20, fill="both", expand=True)
-
-        self.texto_status = ctk.CTkTextbox(frame, width=750, height=200, font=("Arial", 12),
-                                           corner_radius=10, fg_color="#333333", text_color="#FFC107")
+        # Texto de status
+        self.texto_status = ctk.CTkTextbox(self.frame, width=750, height=200, font=("Arial", 12), corner_radius=10)
         self.texto_status.pack(pady=10, padx=10)
 
-        self.progress_bar = ctk.CTkProgressBar(frame, width=700, fg_color="#444444", progress_color="#FFC107")
+        # Barra de progresso
+        self.progress_bar = ctk.CTkProgressBar(self.frame, width=700)
         self.progress_bar.pack(pady=10)
 
-        botoes_frame = ctk.CTkFrame(frame, fg_color="transparent")
-        botoes_frame.pack(pady=10)
+        # Botões
+        self.botoes_frame = ctk.CTkFrame(self.frame, fg_color="transparent")
+        self.botoes_frame.pack(pady=10)
 
-        btn_selecionar = ctk.CTkButton(botoes_frame, text="Selecionar PDFs",
-                                       command=self.selecionar_pdfs, corner_radius=10, width=180,
-                                       fg_color="#FFC107", text_color="#2C2C2C")
-        btn_selecionar.grid(row=0, column=0, padx=10, pady=5)
+        self.btn_selecionar = ctk.CTkButton(self.botoes_frame, text="Selecionar PDFs",
+                                            command=self.selecionar_pdfs, corner_radius=10, width=180)
+        self.btn_selecionar.grid(row=0, column=0, padx=10, pady=5)
 
-        btn_diretorio = ctk.CTkButton(botoes_frame, text="Selecionar Diretório",
-                                      command=self.selecionar_diretorio, corner_radius=10, width=180,
-                                      fg_color="#FFC107", text_color="#2C2C2C")
-        btn_diretorio.grid(row=0, column=1, padx=10, pady=5)
+        self.btn_diretorio = ctk.CTkButton(self.botoes_frame, text="Selecionar Diretório",
+                                           command=self.selecionar_diretorio, corner_radius=10, width=180)
+        self.btn_diretorio.grid(row=0, column=1, padx=10, pady=5)
 
-        btn_processar = ctk.CTkButton(botoes_frame, text="Processar e Salvar",
-                                      command=self.processar_e_salvar, corner_radius=10, width=180,
-                                      fg_color="#FFC107", text_color="#2C2C2C")
-        btn_processar.grid(row=0, column=2, padx=10, pady=5)
+        self.btn_processar = ctk.CTkButton(self.botoes_frame, text="Processar e Salvar",
+                                           command=self.processar_e_salvar, corner_radius=10, width=180)
+        self.btn_processar.grid(row=0, column=2, padx=10, pady=5)
+
+        # Botão para alternar temas
+        self.btn_tema = ctk.CTkButton(root, text="Alternar Tema", command=self.alternar_tema,
+                                      corner_radius=10, width=180)
+        self.btn_tema.pack(pady=10)
+
+    def alternar_tema(self):
+        """
+        Alterna entre os temas claro e escuro.
+        """
+        if self.tema_atual == "dark":
+            self.tema_atual = "light"
+        else:
+            self.tema_atual = "dark"
+
+        ctk.set_appearance_mode(self.tema_atual)
+        self.texto_status.insert("end", f"Tema alterado para: {self.tema_atual}\n")
 
     def selecionar_pdfs(self):
         arquivos = filedialog.askopenfilenames(filetypes=[("Arquivos PDF", "*.pdf")])
@@ -366,23 +419,19 @@ class AppInterface:
                 if not df.empty:
                     df = formatar_valor(df)
                     df = adicionar_colunas_personalizadas(df)
-                    df = adicionar_coluna_codigo(df)
-                    salvar_excel_formatado(df, caminho_pdf, self.diretorio_saida)
-                    salvar_txt_formatado(df, caminho_pdf, self.diretorio_saida)
+                    df = adicionar_coluna_historico(df)  # Adiciona a coluna "Código"
+
+                    salvar_excel_formatado(df, caminho_pdf, self.diretorio_saida)  # Salva o Excel
+                    salvar_txt_formatado(df, caminho_pdf, self.diretorio_saida)    # Salva o TXT
+
                     self.texto_status.insert("end", f"Arquivo {index}/{len(self.arquivos_pdf)} processado e salvo.\n")
                 else:
                     self.texto_status.insert("end", f"Falha ao processar arquivo: {caminho_pdf}\n")
 
             except ValueError as e:
-                # Captura erros relacionados ao tipo de extrato não reconhecido
                 self.texto_status.insert("end", f"Erro: {e} ao processar o arquivo: {caminho_pdf}\n")
             except Exception as e:
-                # Captura quaisquer outros erros inesperados
                 self.texto_status.insert("end", f"Erro inesperado ao processar {caminho_pdf}: {e}\n")
-
-            # Atualiza a barra de progresso
-            self.progress_bar.set(index / len(self.arquivos_pdf))
-            self.root.update()
 
         self.texto_status.insert("end", "Todos os arquivos foram processados e salvos no diretório selecionado.\n")
 
