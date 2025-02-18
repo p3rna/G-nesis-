@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 import zipfile
 import pandas as pd
+from tkinterdnd2 import TkinterDnD, DND_FILES
 from pdf2image import convert_from_path
 from pytesseract import image_to_string
 import customtkinter as ctk
@@ -166,21 +167,26 @@ def formatar_valor(df):
     """
     Formata os valores extraídos.
     """
-    def ajustar_valor(valor):
-        try:
-            valor = valor.replace(".", "").replace(",", ".")
-            if "D" in valor:
-                return -float(valor.replace("D", ""))
-            elif "C" in valor:
-                return float(valor.replace("C", ""))
-            else:
-                return float(valor)
-        except Exception as e:
-            logging.warning(f"Erro ao formatar valor: {valor} - {e}")
-            return None
+def ajustar_valor(valor):
+    """
+    Converte valores terminados em 'C' para positivos e 'D' para negativos.
+    Mantém o separador decimal correto e processa números com separador de milhares.
+    """
+    if isinstance(valor, str):  # Garantir que é uma string antes de manipular
+        valor = valor.strip().replace(" ", "")  # Remove espaços extras
 
-    df["Valor"] = df["Valor"].apply(ajustar_valor)
-    return df
+        # Expressão regular para identificar números corretamente
+        match = re.match(r"^(-?[\d\.]+),(\d{2})([CD]?)$", valor)
+
+        if match:
+            numero = match.group(1).replace(".", "") + "." + match.group(2)  # Corrige formato decimal
+            numero = float(numero)  # Converte para número
+            
+            if match.group(3) == "D":  # Se termina com "D", torna negativo
+                return -numero
+            return numero  # Se termina com "C" ou nada, mantém positivo
+
+    return valor  # Retorna o valor original caso não precise ser alterado
 
 def adicionar_colunas_personalizadas(df):
     """
@@ -368,6 +374,26 @@ class AppInterface:
                                            command=self.processar_e_salvar, corner_radius=10, width=180)
         self.btn_processar.grid(row=0, column=2, padx=10, pady=5)
 
+        self.btn_processar_excel = ctk.CTkButton(
+            self.botoes_frame, 
+            text="Processar Excel", 
+            command=self.processar_excel, 
+            corner_radius=10, 
+            width=180
+        )
+        self.btn_processar_excel.grid(row=1, column=1, padx=10, pady=5)
+
+        self.btn_processar_excel = ctk.CTkButton(
+            self.botoes_frame, 
+            text="Processar Excel", 
+            command=self.processar_excel,  
+            corner_radius=10, 
+            width=180
+        )
+        self.btn_processar_excel.grid(row=1, column=1, padx=10, pady=5)
+
+
+
         # Botão para alternar temas
         self.btn_tema = ctk.CTkButton(root, text="Alternar Tema", command=self.alternar_tema,
                                       corner_radius=10, width=180)
@@ -434,6 +460,44 @@ class AppInterface:
                 self.texto_status.insert("end", f"Erro inesperado ao processar {caminho_pdf}: {e}\n")
 
         self.texto_status.insert("end", "Todos os arquivos foram processados e salvos no diretório selecionado.\n")
+
+    def processar_excel(self):
+        """
+        Permite selecionar um arquivo Excel, processa os valores terminados em 'C' ou 'D',
+        insere um cabeçalho correto na linha 1 e salva as alterações.
+        """
+        arquivo_excel = filedialog.askopenfilename(filetypes=[("Arquivos Excel", "*.xlsx")])
+
+        if not arquivo_excel:
+            messagebox.showwarning("Aviso", "Nenhum arquivo Excel foi selecionado.")
+            return
+
+        try:
+            df = pd.read_excel(arquivo_excel, dtype=str, header=None)  # Carregar SEM definir cabeçalho
+
+            print("Primeiras linhas antes da modificação:\n", df.head())  # Depuração
+            self.texto_status.insert("end", f"Primeiras linhas antes: {df.head()}\n")
+
+            # 🔹 Criar um novo DataFrame para o cabeçalho
+            colunas_novas = pd.DataFrame([["Data", "Lançamento", "Valor"]])
+
+            # 🔹 Concatenar o cabeçalho com os dados originais, deslocando tudo para baixo
+            df = pd.concat([colunas_novas, df], ignore_index=True)
+
+            # Aplicar a formatação dos valores na planilha
+            df = df.applymap(ajustar_valor)
+
+            # Salvar novamente o Excel
+            df.to_excel(arquivo_excel, index=False, header=False)  # Salva sem cabeçalho extra
+
+            messagebox.showinfo("Sucesso", "O arquivo Excel foi processado com sucesso!")
+
+            self.texto_status.insert("end", f"Arquivo Excel '{os.path.basename(arquivo_excel)}' processado com sucesso!\n")
+            logging.info(f"Arquivo Excel '{arquivo_excel}' processado e salvo.")
+
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao processar o arquivo: {e}")
+            logging.error(f"Erro ao processar Excel: {e}")
 
 if __name__ == "__main__":
     try:
