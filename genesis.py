@@ -1,4 +1,6 @@
 import os
+import cv2
+import numpy as np
 import logging
 from datetime import datetime
 import zipfile
@@ -12,6 +14,7 @@ import re
 from pytesseract import pytesseract
 import requests
 from PIL import Image
+from fpdf import FPDF
 
 # Caminhos dos binários
 TESSERACT_PATH = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -335,6 +338,8 @@ class AppInterface:
         self.tema_atual = "dark"  # Define o tema inicial como escuro
         ctk.set_appearance_mode(self.tema_atual)
         ctk.set_default_color_theme("dark-blue")
+
+        
 
         # Configuração de transparência (alpha)
         self.root.attributes("-alpha", 0.9)  # Define a opacidade da janela (90%)
